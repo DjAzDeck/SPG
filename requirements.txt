@@ -1,0 +1,9 @@
+#Requirements for the project SPG - October 2021
+numpy==1.20.0
+torch==1.7
+gym==0.15.7
+pytorch-ignite==0.4.2
+tensorboard==2.4.0
+tensorboardX==2.1
+pybullet==3.0.7
+ptan==0.7
