@@ -151,7 +151,7 @@ class Trainer(object):
                     if self.prio:
                         beta = beta_by_frame(self.frame_idx)
                         batch, batch_indices, batch_weights = self.buffer.sample(self.batch_size, beta)
-                        batch_weights_v = torch.tensor(batch_weights).to(self.device)
+                        batch_weights_v = torch.tensor(batch_weights, device=self.device).unsqueeze(1)
                     else:
                         batch = self.buffer.sample(self.batch_size)
                     
@@ -340,7 +340,8 @@ class Trainer(object):
                                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
                     
                     if self.prio:
-                        self.buffer.update_priorities(batch_indices, prios.cpu().numpy())
+                        prios_np = prios.detach().view(-1).clamp_min(1e-6).cpu().numpy()
+                        self.buffer.update_priorities(batch_indices, prios_np)
                     else:
                         pass             
                     #Test handling point
