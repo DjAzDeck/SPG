@@ -1,0 +1,4 @@
+.venv
+saves
+runs
+*__pycache__

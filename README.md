@@ -14,19 +14,19 @@ A great amount of work has been put in order to deliver an easy-to-understand an
 
 Setup
 --------
-For an easy use, we recomment to create a new python3 virtual environment and activate it.
-```
-python3 -m venv SPG python=3.8
-```
-Install the requirements 
-```
-pip3 install -r requirements.txt
+For an easy use, we recomment to use `uv` package manager.
+
+```shell
+uv venv
+uv sync
+source .venv/bin/activate
 ```
 
 Train the Agents
 ----------------
 All you have to do is choose the environments and the parameters you wish to test on the `main.py` file and execute the script passing the name argmument `-n`. Example of usage:
-```
+
+```bash
 python main.py -n 1mil --cuda
 ```
 
@@ -43,6 +43,7 @@ In order to evaluate the final agents, you can run the `evaluate_spg.py` script.
 python evaluate_spg.py -m <weights_path> -r True
 ```
 With the above line you can also record the agent performing on the environments. It requires a virtual graphical display to be installed beforehand.
-```
+
+```shell
 sudo apt-get install xvfb
 ```

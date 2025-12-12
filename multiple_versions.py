@@ -1,9 +1,8 @@
-#!/usr/bin/env python3
 import os
 import ptan
 import time
 import copy
-import gym
+import gymnasium as gym
 from tensorboardX import SummaryWriter
 import numpy as np
 from lib import  spg_torch, common_torch
@@ -22,20 +21,22 @@ beta_start = 0.4
 beta_frames = 400000
 beta_by_frame = lambda frame_idx: min(1.0, beta_start + frame_idx * (1.0 - beta_start) / beta_frames)
 
-def test_net(net: nn.Module, env: gym.Env, count: int = 10, device: str = "cpu"):
+def test_net(net: nn.Module, env: gym.Env, seed: int, count: int = 10, device: str = "cpu"):
     rewards = 0.0
     steps = 0
-    for _ in range(count):
-        obs = env.reset()
+    for i in range(count):
+        obs, _ = env.reset(seed=seed + i)
+        print(f"test_env obs: {obs}")
         while True:
             obs_v = ptan.agent.float32_preprocessor([obs]).to(device)
             mu_s = net(obs_v)
             action = mu_s.squeeze(dim=0).data.cpu().numpy()
             action = np.clip(action, -1, 1)
-            obs, reward, done, _ = env.step(action)
+            obs, reward, done, truncated, _ = env.step(action)
             rewards += reward
             steps += 1
-            if done:
+            # print(f"Testing steps: {steps}")
+            if done or truncated:
                 break
     return rewards / count, steps / count
 
@@ -51,6 +52,7 @@ class Trainer(object):
         version: str,
         batch_size: int,
         prio: bool = None,
+        seed: int = 2025,
         replay_size: int = 1000000,
         discount: float = 0.99,
         LR: float = 1e-4,
@@ -66,12 +68,14 @@ class Trainer(object):
         self.LR = LR
         self.device = device
         self.prio = prio
+        self.seed = seed
         self.prio_alpha = prio_alpha
         self.batch_size = batch_size
         self.gamma = discount
         self.roll_steps = rollout_step
+        self.env = env
         self.test_env = test_env
-        self.replay_initial = 20000
+        self.replay_initial = 2000
         self.test_iters = 5000
         self.version = version
         self.policy_freq = policy_freq
@@ -107,7 +111,7 @@ class Trainer(object):
         self.critic_optim = optim.Adam(self.critic.parameters(), lr=self.LR)
         #Init experience source & replay buffer
         self.experience_source = ptan.experience.ExperienceSourceFirstLast(
-        env, self.agent, gamma=discount, steps_count=1)
+        env, self.agent, gamma=discount, env_seed=self.seed, steps_count=1)
         if self.prio:
             self.buffer = ptan.experience.PrioritizedReplayBuffer(
             self.experience_source, buffer_size=replay_size, alpha=PRIO_REPLAY_ALPHA)
@@ -341,7 +345,7 @@ class Trainer(object):
                     #Test handling point
                     if self.frame_idx % self.test_iters == 0:
                         ts = time.time()
-                        rewards, steps = test_net(self.actor, self.test_env, device=self.device)
+                        rewards, steps = test_net(self.actor, self.test_env, seed=self.seed + 256, device=self.device)
                         print("Test done in %.2f sec, reward %.3f, steps %d" % (
                             time.time() - ts, rewards, steps))
                         self.writer.add_scalar("test_reward", rewards, self.frame_idx)
