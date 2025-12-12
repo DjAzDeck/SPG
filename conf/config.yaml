@@ -1,0 +1,35 @@
+hydra:
+  job:
+    chdir: false
+
+experiment:
+  name: test4
+  device: cpu        # one of: auto, cuda, mps, cpu
+  seed: 0
+  prio: true
+  time_steps: 10100
+  envs: ["Pendulum-v1", "MountainCarContinuous-v0"]
+  versions: ["DDPG", "TD3", "SPG", "SPGR"]
+  searches: [8]       # number of Gaussian searches for SPG variants
+  batch_sizes: [64]
+
+trainer:
+  replay_size: 1000000
+  discount: 0.99
+  lr: 1e-4
+  rollout_step: 1
+  policy_freq: 2
+  noise_clip: 0.5
+  policy_noise: 0.2
+  alpha: 2.5
+  tau: 0.005
+  replay_initial: 5000
+  test_iters: 5000
+  sigma:
+    start: 0.7
+    final: 0.01
+    decay_last_frame: 1200000
+  prioritized_replay:
+    alpha: 0.6
+    beta_start: 0.4
+    beta_frames: 400000

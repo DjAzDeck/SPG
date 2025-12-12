@@ -12,21 +12,12 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 
-SIGMA_DECAY_LAST_FRAME = 1200000
-SIGMA_START = 0.7
-SIGMA_FINAL = 0.01
-
-PRIO_REPLAY_ALPHA = 0.6
-beta_start = 0.4
-beta_frames = 400000
-beta_by_frame = lambda frame_idx: min(1.0, beta_start + frame_idx * (1.0 - beta_start) / beta_frames)
-
 def test_net(net: nn.Module, env: gym.Env, seed: int, count: int = 10, device: str = "cpu"):
     rewards = 0.0
     steps = 0
     for i in range(count):
         obs, _ = env.reset(seed=seed + i)
-        print(f"test_env obs: {obs}")
+        # print(f"test_env obs: {obs}")
         while True:
             obs_v = ptan.agent.float32_preprocessor([obs]).to(device)
             mu_s = net(obs_v)
@@ -62,7 +53,14 @@ class Trainer(object):
         noise_clip: float = 0.5,
         policy_noise: float = 0.2,
         alpha: float = 2.5,
-        tau: float = 0.005
+        tau: float = 0.005,
+        sigma_start: float = 0.7,
+        sigma_final: float = 0.01,
+        sigma_decay_last_frame: int = 1200000,
+        beta_start: float = 0.4,
+        beta_frames: int = 400000,
+        replay_initial: int = 5000,
+        test_iters: int = 5000,
         ):
         
         self.LR = LR
@@ -75,14 +73,19 @@ class Trainer(object):
         self.roll_steps = rollout_step
         self.env = env
         self.test_env = test_env
-        self.replay_initial = 5000
-        self.test_iters = 5000
+        self.replay_initial = replay_initial
+        self.test_iters = test_iters
         self.version = version
         self.policy_freq = policy_freq
         self.policy_noise = policy_noise
         self.alpha = alpha
         self.tau = tau
         self.noise_clip = noise_clip
+        self.sigma_start = sigma_start
+        self.sigma_final = sigma_final
+        self.sigma_decay_last_frame = sigma_decay_last_frame
+        self.beta_start = beta_start
+        self.beta_frames = beta_frames
 
         #Init nets
         if self.version == 'DDPG':
@@ -114,18 +117,24 @@ class Trainer(object):
         env, self.agent, gamma=discount, env_seed=self.seed, steps_count=1)
         if self.prio:
             self.buffer = ptan.experience.PrioritizedReplayBuffer(
-            self.experience_source, buffer_size=replay_size, alpha=PRIO_REPLAY_ALPHA)
+            self.experience_source, buffer_size=replay_size, alpha=self.prio_alpha)
         else:
             self.buffer = ptan.experience.ExperienceReplayBuffer(
             self.experience_source, buffer_size=replay_size)
 
 
-    def train_routine(self, name: str, explore: int, stop: int):
-        #Make save path
-        self.save_path = os.path.join("saves", name)
+    def _beta_by_frame(self, frame_idx: int) -> float:
+        denom = max(self.beta_frames, 1)
+        return min(1.0, self.beta_start + frame_idx * (1.0 - self.beta_start) / denom)
+
+
+    def train_routine(self, name: str, explore: int, stop: int, run_dir: str = None):
+        # Set up run directory to hold both logs and checkpoints
+        self.run_dir = run_dir or os.path.join("runs", name)
+        self.save_path = os.path.join(self.run_dir, "checkpoints")
         os.makedirs(self.save_path, exist_ok=True)
-        #init writer for logging
-        self.writer = SummaryWriter(comment='-' + name)
+        # init writer for logging into the run directory
+        self.writer = SummaryWriter(log_dir=os.path.join(self.run_dir, "logs"), comment='-' + name)
         self.frame_idx = 0
         self.best_reward = None
         with ptan.common.utils.RewardTracker(self.writer) as tracker:
@@ -144,12 +153,12 @@ class Trainer(object):
                     if len(self.buffer) < self.replay_initial:
                         continue
                     #Decrease sigma during training
-                    sigma = max(SIGMA_FINAL, SIGMA_START - \
-                    self.frame_idx / SIGMA_DECAY_LAST_FRAME)
+                    sigma = max(self.sigma_final, self.sigma_start - \
+                    self.frame_idx / self.sigma_decay_last_frame)
                     sigma = round(sigma, 3)
 
                     if self.prio:
-                        beta = beta_by_frame(self.frame_idx)
+                        beta = self._beta_by_frame(self.frame_idx)
                         batch, batch_indices, batch_weights = self.buffer.sample(self.batch_size, beta)
                         batch_weights_v = torch.tensor(batch_weights, device=self.device).unsqueeze(1)
                     else:

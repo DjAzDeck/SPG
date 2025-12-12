@@ -24,11 +24,21 @@ source .venv/bin/activate
 
 Train the Agents
 ----------------
-All you have to do is choose the environments and the parameters you wish to test on the `main.py` file and execute the script passing the name argmument `-n`. Example of usage:
+Training is now driven by a Hydra config (`conf/config.yaml`). Edit that file or override values from the CLI to pick environments, algorithms, hyperparameters, and devices.
 
+Examples:
 ```bash
-python main.py -n 1mil --cuda
+# default config
+python main.py
+
+# override run name, envs, total steps
+python main.py experiment.name=pendulum_run experiment.envs=[Pendulum-v1] experiment.time_steps=20000
+
+# change hyperparameters on the fly
+python main.py experiment.prio=false trainer.policy_freq=1 trainer.sigma.start=0.5
 ```
+
+Each run stores TensorBoard logs and checkpoints under `runs/<run-name>/` (logs in `logs/`, checkpoints in `checkpoints/`). Run names include a timestamp (`YYYYMMDD-HHMMSS`) for quick identification. The resolved Hydra config and applied overrides for each run are saved alongside in `runs/<run-name>/config.yaml` (and `overrides.txt`) for reproducibility.
 
 Environments
 ------------

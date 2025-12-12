@@ -1,61 +1,78 @@
+import os
+import datetime
 import torch
 import numpy as np
 import gymnasium as gym
-import argparse
+import hydra
+from hydra.core.hydra_config import HydraConfig
+from omegaconf import DictConfig, OmegaConf
 from multiple_versions import Trainer
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cuda", default=False, action='store_true', help='Enable CUDA')
-    parser.add_argument("-n", "--name", required=True, help='Name of the run')
-    parser.add_argument("-s", "--seed", required=False, default=0, type=int, help='Seed number for experimentation consistency')
-    parser.add_argument("-v", "--version", required=False, default='SPG', type=str, help='Name of the architecture to use')
-    parser.add_argument("-p", "--prio", required=False, default=None, help='Switch to True for using prioritize replay buffer')
-    parser.add_argument("-t", "--time", required=False, default=50100, type=int, help='Number of time steps to train the policy')
-    args = parser.parse_args()
-
-    if args.cuda:
+def resolve_device(preference: str) -> torch.device:
+    pref = (preference or "auto").lower()
+    if pref == "auto":
         if torch.cuda.is_available():
-            device = torch.device("cuda")
             print("Using CUDA device")
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-            print("CUDA not available; falling back to MPS")
-        else:
-            device = torch.device("cpu")
-            print("No GPU/MPS backend available; using CPU")
-    else:
-        device = torch.device("cpu")
-        print("GPU acceleration not requested; using CPU")
-    # Mujoco Environments
-    # ENVS = ["Ant-v2", "HalfCheetah-v2", "Hopper-v2", 
-    #         "Swimmer-v2", "InvertedDoublePendulum-v2", "Reacher-v2"]
-    #PyBullet Environments
-    # ENVS = ['HalfCheetahBulletEnv-v0', 'HumanoidBulletEnv-v0', 'Walker2DBulletEnv-v0', 
-    #         'MinitaurBulletEnv-v0', 'AntBulletEnv-v0', 'HopperBulletEnv-v0']
+            return torch.device("cuda")
+        if torch.backends.mps.is_available():
+            print("Using MPS device")
+            return torch.device("mps")
+        print("Using CPU device (auto fallback)")
+        return torch.device("cpu")
+    if pref == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA requested but not available")
+        print("Using CUDA device")
+        return torch.device("cuda")
+    if pref == "mps":
+        if not torch.backends.mps.is_available():
+            raise RuntimeError("MPS requested but not available")
+        print("Using MPS device")
+        return torch.device("mps")
+    print("Using CPU device (explicit)")
+    return torch.device("cpu")
 
-    ENVS = ["Pendulum-v1", "MountainCarContinuous-v0"]
-    VERSIONS = ['DDPG', 'TD3', 'SPG', 'SPGR']
-    SEARCHES = [8]
-    BATCHES_SIZE = [64]
 
-    TIMESTEPS = args.time
+def persist_run_config(cfg: DictConfig, run_dir: str, meta: dict | None = None):
+    os.makedirs(run_dir, exist_ok=True)
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
+    if isinstance(cfg_dict, dict):
+        cfg_dict["run_metadata"] = meta or {}
+    OmegaConf.save(config=OmegaConf.create(cfg_dict), f=os.path.join(run_dir, "config.yaml"))
+    try:
+        overrides = HydraConfig.get().overrides.task
+        if overrides:
+            with open(os.path.join(run_dir, "overrides.txt"), "w") as f:
+                f.write("\n".join(overrides))
+    except Exception:
+        pass
 
-    for env_n in ENVS:
-        for vers in VERSIONS:
-            for exp_n in SEARCHES:
-                for batches in BATCHES_SIZE:
-                    #Init environments & SEEDS
+
+@hydra.main(config_path="conf", config_name="config", version_base=None)
+def main(cfg: DictConfig):
+    device = resolve_device(cfg.experiment.device)
+    time_steps = cfg.experiment.time_steps
+    searches = cfg.experiment.searches
+    if isinstance(searches, int):
+        searches = [searches]
+    run_ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    for env_n in cfg.experiment.envs:
+        for vers in cfg.experiment.versions:
+            for exp_n in searches:
+                for batches in cfg.experiment.batch_sizes:
                     env = gym.make(env_n)
-                    print(env)
                     test_env = gym.make(env_n)
-                    env.action_space.seed(args.seed)
-                    torch.manual_seed(args.seed)
-                    np.random.seed(args.seed)
+                    env.reset(seed=cfg.experiment.seed)
+                    test_env.reset(seed=cfg.experiment.seed)
+                    env.action_space.seed(cfg.experiment.seed)
+                    test_env.action_space.seed(cfg.experiment.seed)
+                    torch.manual_seed(cfg.experiment.seed)
+                    np.random.seed(cfg.experiment.seed)
                     state_dim = env.observation_space.shape[0]
                     action_dim = env.action_space.shape[0]
-                    kwags = {
+                    trainer_kwargs = {
                         "env": env,
                         "test_env": test_env,
                         "state_dim": state_dim,
@@ -63,12 +80,35 @@ if __name__ == "__main__":
                         "device": device,
                         "version": vers,
                         "batch_size": batches,
-                        "prio": args.prio,
-                        "seed": args.seed,
+                        "prio": cfg.experiment.prio,
+                        "seed": cfg.experiment.seed,
+                        "replay_size": cfg.trainer.replay_size,
+                        "discount": cfg.trainer.discount,
+                        "LR": cfg.trainer.lr,
+                        "prio_alpha": cfg.trainer.prioritized_replay.alpha,
+                        "rollout_step": cfg.trainer.rollout_step,
+                        "policy_freq": cfg.trainer.policy_freq,
+                        "noise_clip": cfg.trainer.noise_clip,
+                        "policy_noise": cfg.trainer.policy_noise,
+                        "alpha": cfg.trainer.alpha,
+                        "tau": cfg.trainer.tau,
+                        "sigma_start": cfg.trainer.sigma.start,
+                        "sigma_final": cfg.trainer.sigma.final,
+                        "sigma_decay_last_frame": cfg.trainer.sigma.decay_last_frame,
+                        "beta_start": cfg.trainer.prioritized_replay.beta_start,
+                        "beta_frames": cfg.trainer.prioritized_replay.beta_frames,
+                        "replay_initial": cfg.trainer.replay_initial,
+                        "test_iters": cfg.trainer.test_iters,
                     }
-                    print("Benching architecture {} on environment {} ".format(vers, env_n))
-                    print("Searching {} times on batch size {} for {} timesteps".format(exp_n, batches, TIMESTEPS))
-                    print("Prioritized Replay Buffer: {}".format(args.prio))
-                    policy = Trainer(**kwags)
-                    name = args.name + '-' + vers + '-' + str(batches) + '-' + str(exp_n) + '-' + str(env_n)
-                    policy.train_routine(name, exp_n, TIMESTEPS)
+                    print(f"Benching architecture {vers} on environment {env_n}")
+                    print(f"Searching {exp_n} times on batch size {batches} for {time_steps} timesteps")
+                    print(f"Prioritized Replay Buffer: {cfg.experiment.prio}")
+                    policy = Trainer(**trainer_kwargs)
+                    name = f"{cfg.experiment.name}-{run_ts}-{vers}-{batches}-{exp_n}-{env_n}"
+                    run_dir = os.path.join("runs", name)
+                    persist_run_config(cfg, run_dir, meta={"env": env_n, "version": vers, "searches": exp_n, "batch_size": batches})
+                    policy.train_routine(name, exp_n, time_steps, run_dir=run_dir)
+
+
+if __name__ == "__main__":
+    main()
