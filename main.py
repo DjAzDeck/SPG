@@ -12,11 +12,22 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--seed", required=False, default=0, type=int, help='Seed number for experimentation consistency')
     parser.add_argument("-v", "--version", required=False, default='SPG', type=str, help='Name of the architecture to use')
     parser.add_argument("-p", "--prio", required=False, default=None, help='Switch to True for using prioritize replay buffer')
-    parser.add_argument("-t", "--time", required=False, default=10100, type=int, help='Number of time steps to train the policy')
+    parser.add_argument("-t", "--time", required=False, default=50100, type=int, help='Number of time steps to train the policy')
     args = parser.parse_args()
 
-    device = torch.device("mps" if args.cuda else "cpu") # mps for MacOS
-    print(f"Will be using device: {device}")
+    if args.cuda:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            print("Using CUDA device")
+        elif torch.backends.mps.is_available():
+            device = torch.device("mps")
+            print("CUDA not available; falling back to MPS")
+        else:
+            device = torch.device("cpu")
+            print("No GPU/MPS backend available; using CPU")
+    else:
+        device = torch.device("cpu")
+        print("GPU acceleration not requested; using CPU")
     # Mujoco Environments
     # ENVS = ["Ant-v2", "HalfCheetah-v2", "Hopper-v2", 
     #         "Swimmer-v2", "InvertedDoublePendulum-v2", "Reacher-v2"]

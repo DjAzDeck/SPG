@@ -75,7 +75,7 @@ class Trainer(object):
         self.roll_steps = rollout_step
         self.env = env
         self.test_env = test_env
-        self.replay_initial = 2000
+        self.replay_initial = 5000
         self.test_iters = 5000
         self.version = version
         self.policy_freq = policy_freq
@@ -326,7 +326,8 @@ class Trainer(object):
                             self.actor_optim.zero_grad()
                             mu = self.actor(train_states_v)
                             Q, _ = self.critic(train_states_v, mu)
-                            lamda = self.alpha = self.alpha/(Q.abs().mean().detach())
+                            q_scale = Q.abs().mean().detach().clamp_min(1e-6)
+                            lamda = torch.clamp(self.alpha / q_scale, 0.1, 10.0)
                             actor_loss_v = -lamda * Q.mean() + F.mse_loss(mu, best_actions)
                             actor_loss_v.backward()
                             self.actor_optim.step()
@@ -353,11 +354,13 @@ class Trainer(object):
                         if self.best_reward is None or self.best_reward < rewards:
                             if self.best_reward is not None:
                                 print("Best reward updated: %.3f -> %.3f" % (self.best_reward, rewards))
-                                name = "best_%+.3f_%d.dat" % (rewards, self.frame_idx)
-                                act_name = os.path.join(self.save_path, name)
-                                crt_name = os.path.join(self.save_path, "Q_" + name)
-                                torch.save(self.actor.state_dict(), act_name)
-                                torch.save(self.critic.state_dict(), crt_name)
+                            else:
+                                print("Best reward initialized: %.3f" % rewards)
                             self.best_reward = rewards
+                            name = "best_%+.3f_%d.dat" % (rewards, self.frame_idx)
+                            act_name = os.path.join(self.save_path, name)
+                            crt_name = os.path.join(self.save_path, "Q_" + name)
+                            torch.save(self.actor.state_dict(), act_name)
+                            torch.save(self.critic.state_dict(), crt_name)
                     elif self.frame_idx == stop:
                         return

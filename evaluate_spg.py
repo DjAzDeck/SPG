@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-import gym
-import pybullet_envs
-import mujoco_py
+import gymnasium as gym
 from tensorboardX import SummaryWriter
 from lib import spg_torch
 
@@ -27,9 +25,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    spec = gym.envs.registry.spec(args.env)
     env = gym.make(args.env)
-    env.seed(args.seed)
+    env.reset(seed=args.seed)
     env.action_space.seed(args.seed)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -42,7 +39,7 @@ if __name__ == "__main__":
     full_reward = []
 
     for frame_idx in range(args.kappa):
-        obs = env.reset()
+        obs, _ = env.reset(seed=args.seed + frame_idx)
         total_reward = 0.0
         total_steps = 0
         while True:
@@ -51,15 +48,15 @@ if __name__ == "__main__":
             mu_v = net(obs_v)
             action = mu_v.squeeze(dim=0).data.numpy()
             action = np.clip(action, -1, 1)
-            obs, reward, done, _ = env.step(action)
+            obs, reward, terminated, truncated, _ = env.step(action)
             total_reward += reward
             total_steps += 1
-            if done:
+            if terminated or truncated:
                 break
         print("In %d steps we got %.3f reward" % (total_steps, total_reward))
         full_reward.append(total_reward)
         writer.add_scalar("test_reward", total_reward, frame_idx)
-        writer.add_scalar("average_test_reward", np.mean(total_reward), frame_idx)
+        writer.add_scalar("average_test_reward", np.mean(full_reward), frame_idx)
 
     print("Reward statistics after 10 runs: \n -------------")
     print("Average reward: %.3f \n \
