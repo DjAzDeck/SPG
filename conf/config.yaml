@@ -3,14 +3,15 @@ hydra:
     chdir: false
 
 experiment:
-  name: test4
-  device: cpu        # one of: auto, cuda, mps, cpu
+  name: halfcheetah_v5
+  device: cpu # one of: auto, cuda, mps, cpu
   seed: 0
   prio: true
-  time_steps: 10100
-  envs: ["Pendulum-v1", "MountainCarContinuous-v0"]
-  versions: ["DDPG", "TD3", "SPG", "SPGR"]
-  searches: [8]       # number of Gaussian searches for SPG variants
+  time_steps: 800100
+  envs:
+    - id: "HalfCheetah-v5" # Default - Can be a big list of Continuous gym envs
+  versions: ["SPGR"] # Can be: ["DDPG", "TD3", "SPG", "SPGR"]
+  searches: [16] # number of Gaussian searches for SPG variants
   batch_sizes: [64]
 
 trainer:
@@ -23,8 +24,27 @@ trainer:
   policy_noise: 0.2
   alpha: 2.5
   tau: 0.005
-  replay_initial: 5000
-  test_iters: 5000
+  replay_initial: 21000
+  test_iters: 21000
+  parallel_envs:
+    num_envs: 10
+    mode: sync # one of: sync, async
+  checkpoint:
+    save_interval: 50000
+    load_path: null
+    resume: false # true: resume optimizer+frame RNG state, false: load weights only
+  replay_buffer:
+    save: true
+    save_interval: 50000
+    load_path: null
+  search:
+    final: null
+    decay_last_frame: 0
+    chunk_size: 64
+  logging:
+    summary_interval_sec: 10.0
+    tqdm: true
+    eval_episodes: 10
   sigma:
     start: 0.7
     final: 0.01

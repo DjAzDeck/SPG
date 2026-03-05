@@ -59,14 +59,19 @@ class ExperienceSource:
         self.total_steps = []
         self.agent_states = [agent.initial_state() for _ in self.pool]
         self.env_seed = env_seed
+        self._next_seed = env_seed
+
+    def _reset_env(self, env: gym.Env) -> tuple[tt.Any, dict]:
+        if self._next_seed is None:
+            return env.reset()
+        seed = int(self._next_seed)
+        self._next_seed += 1
+        return env.reset(seed=seed)
 
     def __iter__(self) -> tt.Generator[Item, None, None]:
         states, histories, cur_rewards, cur_steps = [], [], [], []
         for env in self.pool:
-            if self.env_seed is not None:
-                obs, _ = env.reset(seed=self.env_seed)
-            else:
-                obs, _ = env.reset()
+            obs, _ = self._reset_env(env)
             states.append(obs)
             histories.append(deque(maxlen=self.steps_count))
             cur_rewards.append(0.0)
@@ -97,10 +102,7 @@ class ExperienceSource:
                     self.total_steps.append(cur_steps[idx])
                     cur_rewards[idx] = 0.0
                     cur_steps[idx] = 0
-                    if self.env_seed is not None:
-                        states[idx], _ = env.reset(seed=self.env_seed)
-                    else:
-                        states[idx], _ = env.reset()
+                    states[idx], _ = self._reset_env(env)
                     self.agent_states[idx] = self.agent.initial_state()
                     history.clear()
             iter_idx += 1
@@ -224,7 +226,9 @@ class VectorExperienceSourceFirstLast(ExperienceSource):
         total_steps = np.zeros_like(total_rewards, dtype=np.int64)
 
         if self.env_seed is not None:
-            obs, _ = self.env.reset(seed=self.env_seed)
+            seeds = [self.env_seed + idx for idx in range(self.env.num_envs)]
+            self.env_seed += self.env.num_envs
+            obs, _ = self.env.reset(seed=seeds)
         else:
             obs, _ = self.env.reset()
         env_indices = np.arange(self.env.num_envs)
@@ -268,116 +272,6 @@ class VectorExperienceSourceFirstLast(ExperienceSource):
                 else:
                     yield results
             obs = next_obs
-
-
-def discount_with_dones(rewards, dones, gamma):
-    discounted = []
-    r = 0
-    for reward, done in zip(rewards[::-1], dones[::-1]):
-        r = reward + gamma*r*(1.-done)
-        discounted.append(r)
-    return discounted[::-1]
-
-
-class ExperienceSourceRollouts:
-    """
-    TODO: need to be updated
-    N-step rollout experience source following A3C rollouts scheme. Have to be used with agent,
-    keeping the value in its state (for example, agent.ActorCriticAgent).
-
-    Yields batches of num_envs * n_steps samples with the following arrays:
-    1. observations
-    2. actions
-    3. discounted rewards, with values approximation
-    4. values
-    """
-    def __init__(self, env, agent, gamma, steps_count=5):
-        """
-        Constructs the rollout experience source
-        :param env: environment or list of environments to be used
-        :param agent: callable to convert batch of states into actions
-        :param steps_count: how many steps to perform rollouts
-        """
-        assert isinstance(env, (gym.Env, list, tuple))
-        assert isinstance(agent, BaseAgent)
-        assert isinstance(gamma, float)
-        assert isinstance(steps_count, int)
-        assert steps_count >= 1
-
-        if isinstance(env, (list, tuple)):
-            self.pool = env
-        else:
-            self.pool = [env]
-        self.agent = agent
-        self.gamma = gamma
-        self.steps_count = steps_count
-        self.total_rewards = []
-        self.total_steps = []
-
-    def __iter__(self):
-        pool_size = len(self.pool)
-        states = [np.array(e.reset()) for e in self.pool]
-        mb_states = np.zeros((pool_size, self.steps_count) + states[0].shape, dtype=states[0].dtype)
-        mb_rewards = np.zeros((pool_size, self.steps_count), dtype=np.float32)
-        mb_values = np.zeros((pool_size, self.steps_count), dtype=np.float32)
-        mb_actions = np.zeros((pool_size, self.steps_count), dtype=np.int64)
-        mb_dones = np.zeros((pool_size, self.steps_count), dtype=np.bool)
-        total_rewards = [0.0] * pool_size
-        total_steps = [0] * pool_size
-        agent_states = None
-        step_idx = 0
-
-        while True:
-            actions, agent_states = self.agent(states, agent_states)
-            rewards = []
-            dones = []
-            new_states = []
-            for env_idx, (e, action) in enumerate(zip(self.pool, actions)):
-                o, r, done, _ = e.step(action)
-                total_rewards[env_idx] += r
-                total_steps[env_idx] += 1
-                if done:
-                    o = e.reset()
-                    self.total_rewards.append(total_rewards[env_idx])
-                    self.total_steps.append(total_steps[env_idx])
-                    total_rewards[env_idx] = 0.0
-                    total_steps[env_idx] = 0
-                new_states.append(np.array(o))
-                dones.append(done)
-                rewards.append(r)
-            # we need an extra step to get values approximation for rollouts
-            if step_idx == self.steps_count:
-                # calculate rollout rewards
-                for env_idx, (env_rewards, env_dones, last_value) in enumerate(zip(mb_rewards, mb_dones, agent_states)):
-                    env_rewards = env_rewards.tolist()
-                    env_dones = env_dones.tolist()
-                    if not env_dones[-1]:
-                        env_rewards = discount_with_dones(env_rewards + [last_value], env_dones + [False], self.gamma)[:-1]
-                    else:
-                        env_rewards = discount_with_dones(env_rewards, env_dones, self.gamma)
-                    mb_rewards[env_idx] = env_rewards
-                yield mb_states.reshape((-1,) + mb_states.shape[2:]), mb_rewards.flatten(), mb_actions.flatten(), mb_values.flatten()
-                step_idx = 0
-            mb_states[:, step_idx] = states
-            mb_rewards[:, step_idx] = rewards
-            mb_values[:, step_idx] = agent_states
-            mb_actions[:, step_idx] = actions
-            mb_dones[:, step_idx] = dones
-            step_idx += 1
-            states = new_states
-
-    def pop_total_rewards(self):
-        r = self.total_rewards
-        if r:
-            self.total_rewards = []
-            self.total_steps = []
-        return r
-
-    def pop_rewards_steps(self):
-        res = list(zip(self.total_rewards, self.total_steps))
-        if res:
-            self.total_rewards, self.total_steps = [], []
-        return res
 
 
 class ExperienceSourceBuffer:
@@ -447,6 +341,29 @@ class ExperienceReplayBuffer:
         for _ in range(samples):
             entry = next(self.experience_source_iter)
             self._add(entry)
+
+    def state_dict(self) -> dict:
+        return {
+            "type": "uniform",
+            "capacity": self.capacity,
+            "pos": self.pos,
+            "buffer": self.buffer,
+        }
+
+    def load_state_dict(self, state: dict):
+        if state.get("capacity") != self.capacity:
+            raise ValueError(
+                f"Replay capacity mismatch: checkpoint={state.get('capacity')} current={self.capacity}"
+            )
+        loaded_buffer = list(state.get("buffer", []))
+        if len(loaded_buffer) > self.capacity:
+            loaded_buffer = loaded_buffer[-self.capacity:]
+        self.buffer = loaded_buffer
+        loaded_pos = int(state.get("pos", len(self.buffer)))
+        if self.capacity <= 0:
+            self.pos = 0
+        else:
+            self.pos = loaded_pos % self.capacity
 
 
 class PrioReplayBufferNaive:
@@ -546,6 +463,42 @@ class PrioritizedReplayBuffer(ExperienceReplayBuffer):
             self._it_min[idx] = priority ** self._alpha
 
             self._max_priority = max(self._max_priority, priority)
+
+    def state_dict(self) -> dict:
+        state = super().state_dict()
+        state.update({
+            "type": "prioritized",
+            "alpha": self._alpha,
+            "max_priority": self._max_priority,
+            "sum_tree_values": np.array(self._it_sum._value, dtype=np.float32),
+            "min_tree_values": np.array(self._it_min._value, dtype=np.float32),
+        })
+        return state
+
+    def load_state_dict(self, state: dict):
+        super().load_state_dict(state)
+        state_alpha = state.get("alpha")
+        if state_alpha is not None and not np.isclose(float(state_alpha), float(self._alpha)):
+            print(
+                f"Warning: replay alpha mismatch, using current alpha={self._alpha} "
+                f"instead of checkpoint alpha={state_alpha}"
+            )
+        self._max_priority = float(state.get("max_priority", 1.0))
+
+        sum_values = state.get("sum_tree_values")
+        min_values = state.get("min_tree_values")
+        if sum_values is None or min_values is None:
+            # Backfill trees for older snapshots that only stored transitions.
+            for idx in range(len(self.buffer)):
+                value = self._max_priority ** self._alpha
+                self._it_sum[idx] = value
+                self._it_min[idx] = value
+            return
+
+        if len(sum_values) != len(self._it_sum._value) or len(min_values) != len(self._it_min._value):
+            raise ValueError("Segment tree size mismatch while loading prioritized replay buffer")
+        self._it_sum._value = np.asarray(sum_values, dtype=np.float32).tolist()
+        self._it_min._value = np.asarray(min_values, dtype=np.float32).tolist()
 
 
 class BatchPreprocessor:
