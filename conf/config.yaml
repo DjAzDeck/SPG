@@ -1,0 +1,55 @@
+hydra:
+  job:
+    chdir: false
+
+experiment:
+  name: halfcheetah_v5
+  device: cpu # one of: auto, cuda, mps, cpu
+  seed: 0
+  prio: true
+  time_steps: 800100
+  envs:
+    - id: "HalfCheetah-v5" # Default - Can be a big list of Continuous gym envs
+  versions: ["SPGR"] # Can be: ["DDPG", "TD3", "SPG", "SPGR"]
+  searches: [16] # number of Gaussian searches for SPG variants
+  batch_sizes: [64]
+
+trainer:
+  replay_size: 1000000
+  discount: 0.99
+  lr: 1e-4
+  rollout_step: 1
+  policy_freq: 2
+  noise_clip: 0.5
+  policy_noise: 0.2
+  alpha: 2.5
+  tau: 0.005
+  replay_initial: 21000
+  test_iters: 21000
+  parallel_envs:
+    num_envs: 10
+    mode: sync # one of: sync, async
+  checkpoint:
+    save_interval: 50000
+    load_path: null
+    resume: false # true: resume optimizer+frame RNG state, false: load weights only
+  replay_buffer:
+    save: true
+    save_interval: 50000
+    load_path: null
+  search:
+    final: null
+    decay_last_frame: 0
+    chunk_size: 64
+  logging:
+    summary_interval_sec: 10.0
+    tqdm: true
+    eval_episodes: 10
+  sigma:
+    start: 0.7
+    final: 0.01
+    decay_last_frame: 1200000
+  prioritized_replay:
+    alpha: 0.6
+    beta_start: 0.4
+    beta_frames: 400000

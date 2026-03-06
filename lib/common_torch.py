@@ -2,9 +2,8 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+
 import ptan
-from math import sqrt
-import random
 
 #N_EXPLORE = 10
 #GAMMA = 0.99
@@ -45,8 +44,80 @@ def unpack_batch(batch: Tuple, device: str = "gpu"):
 
     return states_v, actions_v, rewards_v, dones_t, last_states_v
 
+
 @torch.no_grad()
-def unpack_batch_spg(batch: Tuple, actor: nn.Module, critic: nn.Module, sigma: float, explore: int, device: torch.device, version: str):
+def _critic_q(critic: nn.Module, states_v: torch.Tensor, actions_v: torch.Tensor, version: str) -> torch.Tensor:
+    if version == "SPGR":
+        q1_v, _ = critic(states_v, actions_v)
+        return q1_v
+    return critic(states_v, actions_v)
+
+
+@torch.no_grad()
+def _vectorized_search_update(
+    states_v: torch.Tensor,
+    base_actions_v: torch.Tensor,
+    critic: nn.Module,
+    version: str,
+    sigma: float,
+    explore: int,
+    search_chunk_size: int,
+) -> torch.Tensor:
+    if explore <= 0:
+        return torch.clip(base_actions_v, -1, 1)
+
+    best_actions = base_actions_v.clone()
+    best_q = _critic_q(critic, states_v, best_actions, version)
+    if best_q.dim() == 1:
+        best_q = best_q.unsqueeze(-1)
+
+    noise_std = float(np.sqrt(max(sigma, 1e-12)))
+    batch_size = best_actions.shape[0]
+    action_dim = best_actions.shape[1]
+    state_shape = states_v.shape[1:]
+    search_chunk_size = int(search_chunk_size) if search_chunk_size and search_chunk_size > 0 else int(explore)
+    remaining = int(explore)
+
+    while remaining > 0:
+        chunk = min(remaining, search_chunk_size)
+        sampled_actions = best_actions.unsqueeze(0) + (
+            torch.randn(chunk, batch_size, action_dim, device=best_actions.device, dtype=best_actions.dtype) * noise_std
+        )
+        sampled_actions_flat = sampled_actions.view(chunk * batch_size, action_dim)
+        repeated_states = (
+            states_v.unsqueeze(0)
+            .expand(chunk, *states_v.shape)
+            .reshape(chunk * batch_size, *state_shape)
+        )
+        sampled_q = _critic_q(critic, repeated_states, sampled_actions_flat, version)
+        if sampled_q.dim() == 1:
+            sampled_q = sampled_q.unsqueeze(-1)
+        sampled_q = sampled_q.view(chunk, batch_size, 1)
+        best_chunk_q, best_chunk_idx = torch.max(sampled_q, dim=0)
+
+        improves = best_chunk_q > best_q
+        if torch.any(improves):
+            gather_idx = best_chunk_idx.squeeze(-1)
+            candidate_best = sampled_actions[gather_idx, torch.arange(batch_size, device=best_actions.device)]
+            improve_mask = improves.squeeze(-1)
+            best_actions[improve_mask] = candidate_best[improve_mask]
+            best_q[improves] = best_chunk_q[improves]
+        remaining -= chunk
+
+    return torch.clip(best_actions, -1, 1)
+
+
+@torch.no_grad()
+def unpack_batch_spg(
+    batch: Tuple,
+    actor: nn.Module,
+    critic: nn.Module,
+    sigma: float,
+    explore: int,
+    device: torch.device,
+    version: str,
+    search_chunk_size: int = 0,
+):
     """
     Unpack Sample Policy Gradient (SPG) batch
 
@@ -124,43 +195,29 @@ def unpack_batch_spg(batch: Tuple, actor: nn.Module, critic: nn.Module, sigma: f
         best_act = np.clip(best, -1, 1)
         best_action = ptan.agent.float32_preprocessor(best_act).to(device)
 
-    elif version == 'SPG':
-        mu_s = actor(states_v)
-        QcurrentPolicy = critic(states_v, mu_s)
-        best = mu_s
-        QQ = critic(states_v, actions_v)
-        cond_1 = QQ > QcurrentPolicy
-        indices_1 = cond_1.nonzero(as_tuple=False)
-        best[indices_1] = actions_v[indices_1]
-        for _ in range(explore):
-            sampled_np = best + (torch.randn(best.size())*sqrt(sigma)).to(device)
-            # #Add symmetric noise. (+-)
-            # sample_np = add_sampled_noise(best, best.size(), sigma, device)
-            Q_1 = critic(states_v, sampled_np)
-            Q_2 = critic(states_v, best)
-            cond_2 = Q_1 > Q_2
-            indices_2 = cond_2.nonzero(as_tuple=False)
-            best[indices_2] = sampled_np[indices_2]
-        best_action = torch.clip(best, -1, 1).to(device)
-
-    elif version == 'SPGR':
-        mu_s = actor(states_v)
-        QcurrentPolicy, _ = critic(states_v, mu_s)
-        best = mu_s
-        QQ, _ = critic(states_v, actions_v)
-        cond_1 = QQ > QcurrentPolicy
-        indices_1 = cond_1.nonzero(as_tuple=False)
-        best[indices_1] = actions_v[indices_1]
-        for _ in range(explore):
-            sampled_np = best + (torch.randn(best.size())*sqrt(sigma)).to(device)
-            # #Add symmetric noise. (+-)
-            # sample_np = add_sampled_noise(best, best.size(), sigma, device)
-            Q_1, _ = critic(states_v, sampled_np)
-            Q_2, _ = critic(states_v, best)
-            cond_2 = Q_1 > Q_2
-            indices_2 = cond_2.nonzero(as_tuple=False)
-            best[indices_2] = sampled_np[indices_2]
-        best_action = torch.clip(best, -1, 1).to(device)
+    elif version in {'SPG', 'SPGR'}:
+        policy_actions = actor(states_v)
+        q_policy = _critic_q(critic, states_v, policy_actions, version)
+        q_replay = _critic_q(critic, states_v, actions_v, version)
+        if q_policy.dim() == 1:
+            q_policy = q_policy.unsqueeze(-1)
+        if q_replay.dim() == 1:
+            q_replay = q_replay.unsqueeze(-1)
+        choose_replay = q_replay > q_policy
+        best_actions = policy_actions.clone()
+        replay_mask = choose_replay.expand_as(best_actions)
+        best_actions[replay_mask] = actions_v[replay_mask]
+        best_action = _vectorized_search_update(
+            states_v=states_v,
+            base_actions_v=best_actions,
+            critic=critic,
+            version=version,
+            sigma=sigma,
+            explore=explore,
+            search_chunk_size=search_chunk_size,
+        ).to(device)
+    else:
+        raise ValueError(f"Unsupported SPG unpack version: {version}")
 
     return states_v, actions_v, rewards_v, dones_t, last_states_v, best_action
 

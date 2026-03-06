@@ -1,7 +1,8 @@
-import ptan
 import numpy as np
 import torch
 import torch.nn as nn
+
+import ptan
 
 HID_SIZE = 256
 

@@ -1,0 +1,6 @@
+.venv
+saves
+runs
+*__pycache__
+outputs
+videos
